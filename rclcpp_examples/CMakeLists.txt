@@ -41,6 +41,10 @@ add_executable_for_each_rmw_implementations(listener_memory
 add_executable_for_each_rmw_implementations(talker_memory
   src/topics/talker_memory.cpp
   TARGET_DEPENDENCIES ${target_dependencies} INSTALL)
+add_executable_for_each_rmw_implementations(talker_timer
+  src/topics/talker_timer.cpp
+  TARGET_DEPENDENCIES ${target_dependencies} INSTALL)
+
 
 ##
 ## Examples of Request/Response with Services
