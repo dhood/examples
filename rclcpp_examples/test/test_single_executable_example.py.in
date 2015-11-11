@@ -1,22 +1,45 @@
 import io
 import os
+import signal
 from launch import LaunchDescriptor
-from launch.exit_handler import primary_exit_handler
+from launch.exit_handler import primary_exit_handler, default_exit_handler
 from launch.launcher import DefaultLauncher
 from launch.output_handler import FileOutput
 from launch.output_handler import LineOutput
 
 
 class InMemoryHandler(LineOutput):
-    def __init__(self):
+    def __init__(self, ld, num_expected_lines):
         super(LineOutput, self).__init__()
         self.left_over_stdout = b''
         self.left_over_stderr = b''
         self.stdout_data = io.BytesIO()
         self.stderr_data = io.BytesIO()
+        self.ld = ld
+        self.num_expected_lines = num_expected_lines
 
     def on_stdout_lines(self, lines):
-        self.stdout_data.write(lines)
+        for line in lines.splitlines():
+            # Filter out stdout that comes from underlying DDS implementations
+            if line.startswith(b'pid'):
+                continue
+            if line.startswith(b'rc'):
+                continue
+            if line.startswith(b'RTI Data Distribution Service Evaluation ' +
+                               b'License issued to'):
+                continue
+            if line.startswith(b'Expires on'):
+                continue
+            self.stdout_data.write(line)
+            self.stdout_data.write(b'\n')
+
+            if (len(self.stdout_data.getvalue().splitlines()) >=
+                    self.num_expected_lines):
+                # We have enough output to compare; shut down the children
+                for td in self.ld.task_descriptors:
+                    # Apparently that list can contain None
+                    if td:
+                        td.send_signal(signal.SIGINT)
 
     def on_stderr_lines(self, lines):
         self.stderr_data.write(lines)
@@ -30,46 +53,41 @@ def setup():
 
 
 def test_executable():
-    output_handler = InMemoryHandler()
+    output_handlers = []
+    expected_outputs = []
 
     ld = LaunchDescriptor()
 
-    ld.add_process(
-        cmd=['@RCLCPP_EXAMPLES_EXECUTABLE@', 'test_executable'],
-        name='test_executable',
-        exit_handler=primary_exit_handler,
-        output_handlers=[output_handler],
-    )
-
+    i = 0
+    for exe, txt in zip(@RCLCPP_EXAMPLES_EXECUTABLE@,
+                        @RCLCPP_EXAMPLES_EXPECTED_OUTPUT@):
+        with open(txt, 'rb') as f:
+            expected_outputs.append(f.read().splitlines())
+        output_handlers.append(InMemoryHandler(ld, len(expected_outputs[-1])))
+        ld.add_process(
+            cmd=[exe, 'test_executable'],
+            name='test_executable_' + str(i),
+            exit_handler = primary_exit_handler \
+                if (i==0) else default_exit_handler,
+            output_handlers=[output_handlers[-1]],
+        )
+        i += 1
+    
     launcher = DefaultLauncher()
     launcher.add_launch_descriptor(ld)
     rc = launcher.launch()
-
-    output_lines = []
-    expected_output_lines = None
-
-    with open('@RCLCPP_EXAMPLES_EXPECTED_OUTPUT@', 'rb') as f:
-        expected_output_lines = f.read().splitlines()
-
-    for line in output_handler.stdout_data.getvalue().splitlines():
-        if line.startswith(b'pid'):
-            continue
-        if line.startswith(b'rc'):
-            continue
-        if line.startswith(b'RTI Data Distribution Service Evaluation ' +
-                           b'License issued to'):
-            continue
-        if line.startswith(b'Expires on'):
-            continue
-        output_lines.append(line)
-
-    assert rc == 0, \
-        "The launch file failed with exit code '" + str(rc) + "'. " \
-        'Maybe the client did not receive any messages?'
-
-    assert output_lines == expected_output_lines, \
-        "Example output (%r) does not match expected output (%r)" % \
-        (output_lines, expected_output_lines)
+    
+    for handler, expected_output_lines in zip(output_handlers,
+                                              expected_outputs):
+        output_lines = handler.stdout_data.getvalue().splitlines()
+    
+        assert rc == 0, \
+            "The launch file failed with exit code '" + str(rc) + "'. " \
+            'Maybe the client did not receive any messages?'
+    
+        assert output_lines == expected_output_lines, \
+            "Example output (%r) does not match expected output (%r)" % \
+            (output_lines, expected_output_lines)
 
 if __name__ == '__main__':
     test_executable()
