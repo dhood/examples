@@ -2,23 +2,27 @@ import io
 import os
 import signal
 from launch import LaunchDescriptor
-from launch.exit_handler import primary_exit_handler, default_exit_handler
 from launch.launcher import DefaultLauncher
 from launch.output_handler import FileOutput
 from launch.output_handler import LineOutput
 
 
 class InMemoryHandler(LineOutput):
-    def __init__(self, ld, num_expected_lines):
+    def __init__(self, name, ld, num_expected_lines):
         super(LineOutput, self).__init__()
+        self.name = name
+        self.ld = ld
+        self.num_expected_lines = num_expected_lines
+        self.killed = False
         self.left_over_stdout = b''
         self.left_over_stderr = b''
         self.stdout_data = io.BytesIO()
         self.stderr_data = io.BytesIO()
-        self.ld = ld
-        self.num_expected_lines = num_expected_lines
 
     def on_stdout_lines(self, lines):
+        if self.killed:
+            return
+
         for line in lines.splitlines():
             # Filter out stdout that comes from underlying DDS implementations
             if line.startswith(b'pid'):
@@ -31,15 +35,18 @@ class InMemoryHandler(LineOutput):
             if line.startswith(b'Expires on'):
                 continue
             self.stdout_data.write(line)
+            # Add back the newline that was stripped by splitlines()
             self.stdout_data.write(b'\n')
 
+            # Are we ready to quit?
             if (len(self.stdout_data.getvalue().splitlines()) >=
                     self.num_expected_lines):
-                # We have enough output to compare; shut down the children
+                # We have enough output to compare; shut down my child
                 for td in self.ld.task_descriptors:
-                    # Apparently that list can contain None
-                    if td:
+                    if td.name == self.name:
                         td.send_signal(signal.SIGINT)
+                        self.killed = True
+                        break
 
     def on_stderr_lines(self, lines):
         self.stderr_data.write(lines)
@@ -61,14 +68,14 @@ def test_executable():
     i = 0
     for exe, txt in zip(@RCLCPP_EXAMPLES_EXECUTABLE@,
                         @RCLCPP_EXAMPLES_EXPECTED_OUTPUT@):
+        name = 'test_executable_' + str(i)
         with open(txt, 'rb') as f:
             expected_outputs.append(f.read().splitlines())
-        output_handlers.append(InMemoryHandler(ld, len(expected_outputs[-1])))
+        output_handlers.append(
+            InMemoryHandler(name, ld, len(expected_outputs[-1])))
         ld.add_process(
             cmd=[exe, 'test_executable'],
-            name='test_executable_' + str(i),
-            exit_handler = primary_exit_handler \
-                if (i==0) else default_exit_handler,
+            name=name,
             output_handlers=[output_handlers[-1]],
         )
         i += 1
